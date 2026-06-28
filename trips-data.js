@@ -3,7 +3,7 @@ window.TRIPS_DATA = [
         id: "tokyo-singapore-overland",
         title: "東京からシンガポールへ陸路・海路で南下",
         year: 2027,
-        season: "GWまたは夏",
+        season: "GWまたは夏・仮",
         status: "plan",
         region: "東アジア・東南アジア",
         length: "8日間",
