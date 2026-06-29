@@ -393,6 +393,12 @@
       white-space: nowrap;
     }
 
+    .time.fixed {
+      text-decoration: underline;
+      text-decoration-thickness: 2px;
+      text-underline-offset: 3px;
+    }
+
     .cost {
       width: 96px;
       text-align: right;
@@ -666,11 +672,11 @@
 
   <script src="trips-data.js"></script>
   <script>
-    const trips = window.TRIPS_DATA || [];
+    let trips = [];
 
     const statusText = { plan: "計画中", ready: "準備中", live: "旅行中" };
     let currentFilter = "all";
-    let activeTrip = trips[0];
+    let activeTrip = null;
     let activeDay = 0;
 
     const home = document.getElementById("home");
@@ -681,10 +687,130 @@
     const yearFilter = document.getElementById("yearFilter");
 
     function yen(value) {
-      return value || "";
+      if (value === null || value === undefined || value === "") return "";
+      if (typeof value === "number") return value.toLocaleString("ja-JP") + "円";
+      return value;
+    }
+
+    function compact(items) {
+      return items.filter((item) => item !== null && item !== undefined && item !== "");
+    }
+
+    function displayDate(day) {
+      return compact([day.dateLabel, day.weekday ? `（${day.weekday}）` : "", day.title]).join(" ");
+    }
+
+    function itemPlace(item) {
+      if (item.origin && item.destination) return `${item.origin} → ${item.destination}`;
+      return item.origin || item.destination || "";
+    }
+
+    function itemTime(item) {
+      if (item.startTime && item.endTime) return `${item.startTime}-${item.endTime}`;
+      return item.startTime || item.endTime || "";
+    }
+
+    function normalizeStatus(status) {
+      const map = { "計画中": "plan", "準備中": "ready", "旅行中": "live", "完了": "done", "保留": "hold" };
+      return map[status] || status || "plan";
+    }
+
+    function normalizePreparationItem(item, includeQuantity = false) {
+      if (typeof item === "string") return item;
+      const quantity = includeQuantity && item.quantity ? ` ${item.quantity}${item.unit || ""}` : "";
+      const status = item.status && item.status !== "todo" && item.status !== "未着手" ? `（${item.status}）` : "";
+      const memo = item.memo ? ` - ${item.memo}` : "";
+      return `${item.name || item.item || ""}${quantity}${status}${memo}`;
+    }
+
+    function normalizeNewTrip(trip) {
+      const prep = trip.preparation || {};
+      const prepList = [
+        ...(prep.reservations || []).map((item) => normalizePreparationItem(item)),
+        ...(prep.procedures || []).map((item) => normalizePreparationItem(item)),
+        ...(prep.others || []).map((item) => normalizePreparationItem(item))
+      ];
+      const packingList = (prep.packing || []).map((item) => normalizePreparationItem(item, true));
+      return {
+        id: trip.id,
+        title: trip.title,
+        year: trip.year,
+        season: trip.season,
+        status: normalizeStatus(trip.status),
+        region: trip.region,
+        length: trip.length,
+        countries: trip.countries || [],
+        route: trip.route,
+        concept: trip.concept,
+        notes: trip.notes || [],
+        prep: prepList,
+        packing: packingList,
+        budget: ((trip.budget && trip.budget.summary) || []).map((row) => [
+          row.category,
+          yen(row.estimate),
+          row.memo || ""
+        ]),
+        days: (trip.days || []).map((day) => ({
+          label: `${day.dayNumber}日目`,
+          date: displayDate(day),
+          dateLabel: day.dateLabel || "",
+          weekday: day.weekday || "",
+          title: day.title || "",
+          aim: day.aim || "",
+          checks: day.checks || [],
+          schedule: (day.items || [])
+            .filter((item) => item.isPublished !== false)
+            .map((item) => ({
+              time: itemTime(item),
+              activity: item.activity || item.type || "",
+              place: itemPlace(item),
+              confirmation: item.confirmation || item.memo || "",
+              cost: item.costs ? item.costs.total : "",
+              fixedTime: Boolean(item.fixedTime),
+              distanceKm: item.distanceKm,
+              durationHours: item.durationHours
+            }))
+        }))
+      };
+    }
+
+    function normalizeOldTrip(trip) {
+      return {
+        ...trip,
+        status: normalizeStatus(trip.status),
+        days: (trip.days || []).map((day) => ({
+          ...day,
+          schedule: (day.schedule || []).map((row) => ({
+            time: row[0],
+            activity: row[1],
+            place: row[2],
+            confirmation: row[3],
+            cost: row[4],
+            fixedTime: /^\d{1,2}:\d{2}/.test(row[0] || "")
+          }))
+        }))
+      };
+    }
+
+    async function loadTrips() {
+      try {
+        const response = await fetch("travel-data.json", { cache: "no-store" });
+        if (response.ok) {
+          const data = await response.json();
+          trips = (data.trips || [])
+            .filter((trip) => trip.isPublished !== false)
+            .map(normalizeNewTrip);
+          return;
+        }
+      } catch (error) {
+        console.warn("travel-data.jsonを読み込めませんでした。旧データに切り替えます。", error);
+      }
+      trips = (window.TRIPS_DATA || []).map(normalizeOldTrip);
     }
 
     function initFilters() {
+      regionFilter.length = 1;
+      yearFilter.length = 1;
       [...new Set(trips.map((trip) => trip.region))].forEach((region) => {
         regionFilter.add(new Option(region, region));
       });
@@ -727,7 +853,7 @@
         card.innerHTML = `
           <div>
             <div class="trip-meta">
-              <span class="pill ${trip.status}">${statusText[trip.status]}</span>
+              <span class="pill ${trip.status}">${statusText[trip.status] || trip.status}</span>
               <span class="pill">${trip.year}年</span>
               <span class="pill">${trip.length}</span>
             </div>
@@ -746,6 +872,7 @@
 
     function openTrip(id) {
       activeTrip = trips.find((trip) => trip.id === id) || trips[0];
+      if (!activeTrip) return;
       activeDay = 0;
       home.classList.add("hidden");
       home.classList.remove("visible");
@@ -756,7 +883,7 @@
 
     function renderDetail() {
       document.getElementById("detailMeta").innerHTML = `
-        <span class="pill ${activeTrip.status}">${statusText[activeTrip.status]}</span>
+        <span class="pill ${activeTrip.status}">${statusText[activeTrip.status] || activeTrip.status}</span>
         <span class="pill">${activeTrip.year}年</span>
         <span class="pill">${activeTrip.season}</span>
         <span class="pill">${activeTrip.length}</span>
@@ -784,7 +911,7 @@
         const button = document.createElement("button");
         button.type = "button";
         button.className = index === activeDay ? "active" : "";
-        button.textContent = `${day.label} ${day.date}`;
+        button.textContent = compact([day.label, day.date]).join(" ");
         button.addEventListener("click", () => {
           activeDay = index;
           renderDayTabs();
@@ -800,29 +927,29 @@
       renderList("dayChecks", day.checks);
       document.getElementById("scheduleBody").innerHTML = day.schedule.map((row) => `
         <tr>
-          <td class="time">${row[0]}</td>
-          <td>${row[1]}</td>
-          <td>${row[2]}</td>
-          <td>${row[3]}</td>
-          <td class="cost">${yen(row[4])}</td>
+          <td class="time ${row.fixedTime ? "fixed" : ""}">${row.time || ""}</td>
+          <td>${row.activity || ""}</td>
+          <td>${compact([row.place, row.distanceKm ? `${row.distanceKm}km` : "", row.durationHours ? `${row.durationHours}h` : ""]).join(" / ")}</td>
+          <td>${row.confirmation || ""}</td>
+          <td class="cost">${yen(row.cost)}</td>
         </tr>
       `).join("");
     }
 
     function renderList(id, items) {
-      document.getElementById(id).innerHTML = items.map((item) => `
+      document.getElementById(id).innerHTML = (items || []).map((item) => `
         <li><span class="check" aria-hidden="true"></span><span>${item}</span></li>
       `).join("");
     }
 
     function renderBudget() {
-      document.getElementById("budgetBody").innerHTML = activeTrip.budget.map((row) => `
+      document.getElementById("budgetBody").innerHTML = (activeTrip.budget || []).map((row) => `
         <tr><td>${row[0]}</td><td class="cost">${row[1]}</td><td>${row[2]}</td></tr>
       `).join("");
     }
 
     function renderNotes() {
-      document.getElementById("notesList").innerHTML = activeTrip.notes.map((note) => `
+      document.getElementById("notesList").innerHTML = (activeTrip.notes || []).map((note) => `
         <li>${note}</li>
       `).join("");
     }
@@ -852,13 +979,19 @@
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
 
-    document.getElementById("showNextTrip").addEventListener("click", () => openTrip(trips[0].id));
-    document.getElementById("showPreparing").addEventListener("click", () => openTrip(trips.find((trip) => trip.status === "ready").id));
+    document.getElementById("showNextTrip").addEventListener("click", () => trips[0] && openTrip(trips[0].id));
+    document.getElementById("showPreparing").addEventListener("click", () => {
+      const preparingTrip = trips.find((trip) => trip.status === "ready") || trips[0];
+      if (preparingTrip) openTrip(preparingTrip.id);
+    });
     [search, regionFilter, yearFilter].forEach((input) => input.addEventListener("input", renderTrips));
 
-    initFilters();
-    renderStats();
-    renderTrips();
+    loadTrips().then(() => {
+      activeTrip = trips[0] || null;
+      initFilters();
+      renderStats();
+      renderTrips();
+    });
   </script>
 </body>
 </html>
